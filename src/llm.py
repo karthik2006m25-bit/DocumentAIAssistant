@@ -2,7 +2,7 @@ import os
 
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langgraph.checkpoint.postgres import PostgresSaver
+
 
 
 # Load environment variables
