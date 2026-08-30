@@ -1,19 +1,28 @@
 import pymupdf
 from docx import Document
 from pptx import Presentation
+from io import BytesIO
+from pathlib import Path
 
 
 # ==========================================
 # PDF
 # ==========================================
 
-def extract_text_from_pdf(file_path):
+def extract_text_from_pdf(file):
     """
     Extract text from a PDF while preserving
     page numbers.
+
+    Supports:
+    - File paths
+    - Streamlit UploadedFile
     """
 
-    doc = pymupdf.open(file_path)
+    if hasattr(file, "getvalue"):
+        file = BytesIO(file.getvalue())
+
+    doc = pymupdf.open(file)
 
     pages = []
 
@@ -35,19 +44,29 @@ def extract_text_from_pdf(file_path):
 # DOCX
 # ==========================================
 
-def extract_text_from_docx(file_path):
+def extract_text_from_docx(file):
     """
     Extract text from a DOCX file.
-    Includes paragraphs and tables.
+
+    Includes:
+    - Paragraphs
+    - Tables
+
+    Supports:
+    - File paths
+    - Streamlit UploadedFile
     """
 
-    document = Document(file_path)
+    if hasattr(file, "getvalue"):
+        file = BytesIO(file.getvalue())
+
+    document = Document(file)
 
     sections = []
 
-    # -------------------------------
+    # ------------------------------------------
     # Paragraphs
-    # -------------------------------
+    # ------------------------------------------
 
     for paragraph in document.paragraphs:
 
@@ -56,9 +75,9 @@ def extract_text_from_docx(file_path):
         if text:
             sections.append(text)
 
-    # -------------------------------
+    # ------------------------------------------
     # Tables
-    # -------------------------------
+    # ------------------------------------------
 
     for table_number, table in enumerate(
         document.tables,
@@ -90,13 +109,21 @@ def extract_text_from_docx(file_path):
 # PPTX
 # ==========================================
 
-def extract_text_from_pptx(file_path):
+def extract_text_from_pptx(file):
     """
     Extract text from PowerPoint slides.
+
     Preserves slide numbers.
+
+    Supports:
+    - File paths
+    - Streamlit UploadedFile
     """
 
-    presentation = Presentation(file_path)
+    if hasattr(file, "getvalue"):
+        file = BytesIO(file.getvalue())
+
+    presentation = Presentation(file)
 
     slides = []
 
@@ -130,25 +157,50 @@ def extract_text_from_pptx(file_path):
 # GENERAL DOCUMENT LOADER
 # ==========================================
 
-def extract_text(file_path):
+def extract_text(file):
     """
     Automatically detect the file type
     and extract its text.
+
+    Supports:
+    - PDF
+    - DOCX
+    - PPTX
     """
 
-    file_path = str(file_path).lower()
+    # Get the filename
+    if hasattr(file, "name"):
+        filename = file.name.lower()
+    else:
+        filename = str(file).lower()
 
-    if file_path.endswith(".pdf"):
+    # ------------------------------------------
+    # PDF
+    # ------------------------------------------
 
-        return extract_text_from_pdf(file_path)
+    if filename.endswith(".pdf"):
 
-    elif file_path.endswith(".docx"):
+        return extract_text_from_pdf(file)
 
-        return extract_text_from_docx(file_path)
+    # ------------------------------------------
+    # DOCX
+    # ------------------------------------------
 
-    elif file_path.endswith(".pptx"):
+    elif filename.endswith(".docx"):
 
-        return extract_text_from_pptx(file_path)
+        return extract_text_from_docx(file)
+
+    # ------------------------------------------
+    # PPTX
+    # ------------------------------------------
+
+    elif filename.endswith(".pptx"):
+
+        return extract_text_from_pptx(file)
+
+    # ------------------------------------------
+    # Unsupported
+    # ------------------------------------------
 
     else:
 
