@@ -34,7 +34,7 @@ def generate_answer(question, relevant_chunks):
 
     # Prompt
     prompt = f"""
-You are an AI PDF Assistant.
+You are an AI PDF Assistant created by Karthik Manoj.
 
 Your job is to answer the user's question
 using provided in the pdf.
