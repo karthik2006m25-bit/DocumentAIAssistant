@@ -141,7 +141,7 @@ if document is not None:
             st.session_state.session_id = str(uuid.uuid4())
             st.session_state.messages = []
 
-        st.success("✅ PDF processed successfully!")
+        st.success("✅ Document processed successfully!")
 
         st.info(
             f"📄 **{document.name}** was divided into "
@@ -157,7 +157,7 @@ if st.session_state.pdf_processed:
 
     st.divider()
 
-    st.subheader("💬 Chat with your PDF")
+    st.subheader("💬 Chat with your Document")
 
 
     # ======================================
@@ -197,7 +197,7 @@ if st.session_state.pdf_processed:
     # ======================================
 
     question = st.chat_input(
-        "Ask a question about your PDF..."
+        "Ask a question about your Document..."
     )
 
 
@@ -244,7 +244,7 @@ if st.session_state.pdf_processed:
         # RETRIEVE PDF CHUNKS
         # ==================================
 
-        with st.spinner("🔎 Searching the PDF..."):
+        with st.spinner("🔎 Searching the Document..."):
 
             relevant_chunks = retrieve_chunks(
                 question,
@@ -297,17 +297,17 @@ if st.session_state.pdf_processed:
             # ==================================
 
             prompt = f"""
-You are an AI PDF Assistant.
+You are an AI Document Assistant.
 
 Answer the user's question using ONLY the
-information available in the PDF context.
+information available in the document context.
 
 You also have access to the previous conversation
 to understand follow-up questions.
 
 Do NOT use outside knowledge.
 
-If the answer cannot be found in the PDF context,
+If the answer cannot be found in the document context,
 say:
 
 "I couldn't find the answer in the uploaded document."
