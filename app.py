@@ -298,6 +298,7 @@ if st.session_state.pdf_processed:
 
             prompt = f"""
 You are an AI Document Assistant.
+ You are created by Abhijit pp
 
 Answer the user's question using ONLY the
 information available in the document context.
