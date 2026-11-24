@@ -1,304 +1,142 @@
-import os
 import uuid
-import streamlit as st
+from dataclasses import dataclass, field
+from pathlib import Path
 
-from src.pdf_loader import extract_text, extract_text_from_pdf
-from src.text_splitter import split_text
-from src.embeddings import embeddings, create_embeddings
-from src.vector_store import create_vector_store
-from src.retriever import retrieve_chunks
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
+
+from src.database import save_message, save_query, save_response
+from src.embeddings import create_embeddings, embeddings
 from src.llm import generate_answer
-from src.database import save_message, get_conversation, save_query, save_response
+from src.pdf_loader import extract_text
+from src.retriever import retrieve_chunks
+from src.text_splitter import split_text
+from src.vector_store import create_vector_store
 
 
-# ==========================================
-# PAGE CONFIGURATION
-# ==========================================
+SUPPORTED_FILE_TYPES = {".pdf", ".docx", ".pptx"}
 
-st.set_page_config(
-    page_title="AI Document Assistant",
-    page_icon="🤖",
-    layout="wide"
+
+@dataclass
+class DocumentSession:
+    filename: str
+    index: object
+    chunks: list[str]
+    messages: list[dict[str, str]] = field(default_factory=list)
+
+
+class ChatRequest(BaseModel):
+    session_id: str
+    question: str = Field(min_length=1, max_length=4000)
+
+
+class ChatResponse(BaseModel):
+    answer: str
+    retrieved_chunks: list[str]
+
+
+app = FastAPI(title="Karthik DOS Assistant API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-
-# ==========================================
-# TITLE
-# ==========================================
-
-st.title("🤖 AI Document Assistant")
-st.write("Upload a document and have a conversation about it.")
+document_sessions: dict[str, DocumentSession] = {}
 
 
-# ==========================================
-# SESSION STATE
-# ==========================================
-
-if "index" not in st.session_state:
-    st.session_state.index = None
-
-if "chunks" not in st.session_state:
-    st.session_state.chunks = None
-
-if "pdf_processed" not in st.session_state:
-    st.session_state.pdf_processed = False
-
-if "pdf_name" not in st.session_state:
-    st.session_state.pdf_name = None
-
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-# Unique conversation ID
-if "session_id" not in st.session_state:
-    st.session_state.session_id = str(uuid.uuid4())
+@app.get("/api/health")
+async def health_check():
+    return {"status": "ok"}
 
 
-# ==========================================
-# PDF UPLOAD
-# ==========================================
-
-document = st.file_uploader(
-    "📄 Upload your document",
-    type=["pdf", "docx", "pptx"]
-)
-
-
-# ==========================================
-# PROCESS PDF
-# ==========================================
-
-if document is not None:
-
-    st.write(f"**Selected file:** `{document.name}`")
-
-    if st.button("🔄 Process Document"):
-
-        with st.spinner("Processing your document..."):
-
-            # Create upload directory
-            os.makedirs("data/uploads", exist_ok=True)
-
-            # Save uploaded document
-            doc_path = os.path.join(
-                "data",
-                "uploads",
-                document.name
-            )
-
-            with open(doc_path, "wb") as f:
-                f.write(document.getbuffer())
-
-            # ----------------------------------
-            # 1. Extract text
-            # ----------------------------------
-
-            text = extract_text(doc_path)
-
-            if not text.strip():
-
-                st.error(
-                    "Could not extract text from this document. "
-                    "It may be a scanned/image-based document."
-                )
-
-                st.stop()
-
-            # ----------------------------------
-            # 2. Split text
-            # ----------------------------------
-
-            chunks = split_text(text)
-
-            if not chunks:
-
-                st.error("No text chunks were created.")
-
-                st.stop()
-
-            # ----------------------------------
-            # 3. Create embeddings
-            # ----------------------------------
-
-            vectors = create_embeddings(chunks)
-
-            # ----------------------------------
-            # 4. Create FAISS index
-            # ----------------------------------
-
-            index = create_vector_store(vectors)
-
-            # ----------------------------------
-            # Save PDF information
-            # ----------------------------------
-
-            st.session_state.index = index
-            st.session_state.chunks = chunks
-            st.session_state.pdf_processed = True
-            st.session_state.pdf_name = document.name
-
-            # New PDF = new conversation
-            st.session_state.session_id = str(uuid.uuid4())
-            st.session_state.messages = []
-
-        st.success("✅ Document processed successfully!")
-
-        st.info(
-            f"📄 **{document.name}** was divided into "
-            f"**{len(chunks)} chunks**."
+@app.post("/api/documents")
+async def process_document(document: UploadFile = File(...)):
+    filename = Path(document.filename or "").name
+    suffix = Path(filename).suffix.lower()
+    if suffix not in SUPPORTED_FILE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported file type. Upload a PDF, DOCX, or PPTX document.",
         )
 
+    content = await document.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="The uploaded document is empty.")
 
-# ==========================================
-# CHAT INTERFACE
-# ==========================================
+    upload_dir = Path("data/uploads")
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    document_path = upload_dir / f"{uuid.uuid4()}{suffix}"
+    document_path.write_bytes(content)
 
-if st.session_state.pdf_processed:
-
-    st.divider()
-
-    st.subheader("💬 Chat with your Document")
-
-
-    # ======================================
-    # LOAD SAVED CONVERSATION
-    # ======================================
-
-    if not st.session_state.messages:
-
-        saved_messages = get_conversation(
-            st.session_state.session_id
+    text = await run_in_threadpool(extract_text, str(document_path))
+    if not text.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="Could not extract text from this document. It may be scanned or image-based.",
         )
 
-        if saved_messages:
+    chunks = await run_in_threadpool(split_text, text)
+    if not chunks:
+        raise HTTPException(status_code=422, detail="No text chunks were created.")
 
-            st.session_state.messages = [
-                {
-                    "role": message["role"],
-                    "content": message["message"]
-                }
-                for message in saved_messages
-            ]
+    vectors = await run_in_threadpool(create_embeddings, chunks)
+    index = await run_in_threadpool(create_vector_store, vectors)
 
-
-    # ======================================
-    # DISPLAY CHAT HISTORY
-    # ======================================
-
-    for message in st.session_state.messages:
-
-        with st.chat_message(message["role"]):
-
-            st.markdown(message["content"])
+    session_id = str(uuid.uuid4())
+    document_sessions[session_id] = DocumentSession(
+        filename=filename,
+        index=index,
+        chunks=chunks,
+    )
+    return {
+        "session_id": session_id,
+        "filename": filename,
+        "chunk_count": len(chunks),
+    }
 
 
-    # ======================================
-    # CHAT INPUT
-    # ======================================
+@app.post("/api/chat", response_model=ChatResponse)
+async def chat(request: ChatRequest):
+    session = document_sessions.get(request.session_id)
+    if session is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Document session not found. Please upload and process your document again.",
+        )
 
-    question = st.chat_input(
-        "Ask a question about your Document..."
+    question = request.question.strip()
+    if not question:
+        raise HTTPException(status_code=422, detail="Question cannot be blank.")
+
+    session.messages.append({"role": "user", "content": question})
+    await run_in_threadpool(save_message, request.session_id, "user", question)
+    await run_in_threadpool(save_query, request.session_id, "user", question)
+
+    relevant_chunks = await run_in_threadpool(
+        retrieve_chunks,
+        question,
+        embeddings,
+        session.index,
+        session.chunks,
+        3,
     )
 
-
-    if question:
-
-        # ==================================
-        # DISPLAY USER MESSAGE
-        # ==================================
-
-        with st.chat_message("user"):
-
-            st.markdown(question)
-
-
-        # ==================================
-        # SAVE USER MESSAGE LOCALLY
-        # ==================================
-
-        st.session_state.messages.append(
-            {
-                "role": "user",
-                "content": question
-            }
+    if not relevant_chunks:
+        answer = "I couldn't find relevant information in the uploaded document."
+    else:
+        conversation_history = "".join(
+            f"{message['role'].upper()}: {message['content']}\n"
+            for message in session.messages[:-1]
         )
-
-
-        # ==================================
-        # SAVE USER MESSAGE TO SUPABASE
-        # ==================================
-
-        save_message(
-            st.session_state.session_id,
-            "user",
-            question
-        )
-        save_query(
-            st.session_state.session_id,
-            "user",
-            question
-        )
-
-
-        # ==================================
-        # RETRIEVE PDF CHUNKS
-        # ==================================
-
-        with st.spinner("🔎 Searching the Document..."):
-
-            relevant_chunks = retrieve_chunks(
-                question,
-                embeddings,
-                st.session_state.index,
-                st.session_state.chunks,
-                k=3
-            )
-
-
-        # ==================================
-        # IF NO RELEVANT INFORMATION
-        # ==================================
-
-        if not relevant_chunks:
-
-            answer = (
-                "I couldn't find relevant information "
-                "in the uploaded document."
-            )
-
-
-        else:
-
-            # ==================================
-            # CONVERSATION HISTORY
-            # ==================================
-
-            conversation_history = ""
-
-            for message in st.session_state.messages[:-1]:
-
-                conversation_history += (
-                    f"{message['role'].upper()}: "
-                    f"{message['content']}\n"
-                )
-
-
-            # ==================================
-            # PDF CONTEXT
-            # ==================================
-
-            context = "\n\n".join(
-                relevant_chunks
-            )
-
-
-            # ==================================
-            # PROMPT
-            # ==================================
-
-            prompt = f"""
+        context = "\n\n".join(relevant_chunks)
+        prompt = f"""
 You are an AI Document Assistant.
- You are created by Karthik Manoj
+You are created by Karthik Manoj.
 
 Answer the user's question using ONLY the
 information available in the document context.
@@ -316,7 +154,7 @@ say:
 Previous conversation:
 {conversation_history}
 
-PDF context:
+Document context:
 {context}
 
 Current question:
@@ -324,97 +162,26 @@ Current question:
 
 Answer clearly and concisely.
 """
+        answer = await run_in_threadpool(generate_answer, prompt, [])
+
+    session.messages.append({"role": "assistant", "content": answer})
+    await run_in_threadpool(
+        save_message, request.session_id, "assistant", answer
+    )
+    await run_in_threadpool(
+        save_response, request.session_id, "assistant", answer
+    )
+
+    return ChatResponse(answer=answer, retrieved_chunks=relevant_chunks)
 
 
-            # ==================================
-            # GENERATE ANSWER
-            # ==================================
+@app.delete("/api/documents/{session_id}/conversation")
+async def clear_conversation(session_id: str):
+    session = document_sessions.pop(session_id, None)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Document session not found.")
 
-            with st.spinner("🤖 Generating answer..."):
-
-                answer = generate_answer(
-                    prompt,
-                    []
-                )
-
-
-        # ==================================
-        # DISPLAY AI RESPONSE
-        # ==================================
-
-        with st.chat_message("assistant"):
-
-            st.markdown(answer)
-
-
-        # ==================================
-        # SAVE AI MESSAGE LOCALLY
-        # ==================================
-
-        st.session_state.messages.append(
-            {
-                "role": "assistant",
-                "content": answer
-            }
-        )
-
-
-        # ==================================
-        # SAVE AI MESSAGE TO SUPABASE
-        # ==================================
-
-        save_message(
-            st.session_state.session_id,
-            "assistant",
-            answer
-        )
-
-        
-
-        save_response(
-            st.session_state.session_id,
-            "assistant",
-            answer
-        )
-
-        # ==================================
-        # SHOW RETRIEVED CONTEXT
-        # ==================================
-
-        if relevant_chunks:
-
-            with st.expander(
-                "🔎 View retrieved PDF sections"
-            ):
-
-                for i, chunk in enumerate(
-                    relevant_chunks,
-                    start=1
-                ):
-
-                    st.markdown(
-                        f"**Retrieved Section {i}**"
-                    )
-
-                    st.write(chunk)
-
-                    st.divider()
-
-
-# ==========================================
-# CLEAR CONVERSATION
-# ==========================================
-
-if st.session_state.pdf_processed:
-
-    if st.button("🗑️ Clear Conversation"):
-
-        # Clear local chat
-        st.session_state.messages = []
-
-        # Create a new conversation ID
-        st.session_state.session_id = str(
-            uuid.uuid4()
-        )
-
-        st.rerun()
+    new_session_id = str(uuid.uuid4())
+    session.messages.clear()
+    document_sessions[new_session_id] = session
+    return {"session_id": new_session_id}
